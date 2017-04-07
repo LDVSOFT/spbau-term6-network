@@ -1,0 +1,22 @@
+include Makefile.vars
+
+.PHONY: all
+
+all: $(BIN32) $(BIN64)
+
+-include $(DEP)
+
+dep/%.d: src/%.cpp $(MAKEFILES)
+	$(CXX) $(CXXFLAGS_DEPS) -MM -MF $@ -MT '$(patsubst obj/%.d,obj/%.o32,$@) $(patsubst obj/%.d,obj/%.o64,$@)' $<
+
+obj/%.o32: src/%.cpp $(MAKEFILES)
+	$(CXX) -m32 $(CXXFLAGS) -c $< -o $@
+
+obj/%.o64: src/%.cpp $(MAKEFILES)
+	$(CXX) -m64 $(CXXFLAGS) -c $< -o $@
+
+bin/%32: obj/main_%.o32 $(OBJ32_NM) $(MAKEFILES)
+	$(CXX) -m32 $(CXXFLAGS) $< $(OBJ32_NM) -o $@
+
+bin/%64: obj/main_%.o64 $(OBJ64_NM) $(MAKEFILES)
+	$(CXX) -m64 $(CXXFLAGS) $< $(OBJ64_NM) -o $@
