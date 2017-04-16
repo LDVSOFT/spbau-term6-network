@@ -19,45 +19,35 @@ static protocol::value last(2);
 
 struct client_handler {
 	pthread_t thread;
-	protocol* prot;
+	std::unique_ptr<protocol> prot;
 	std::set<protocol::value> tasks;
-	std::exception_ptr ex;
 	std::atomic_bool done;
 
-	client_handler():
-		prot(nullptr),
-		ex(nullptr),
-		done(false) {
+	client_handler(std::unique_ptr<protocol>&& prot):
+		prot(std::move(prot)) {
 	}
 
 	static void* enter(void* arg) {
-		client_handler* self((client_handler*)(arg));
+		std::unique_ptr<client_handler> self((client_handler*)(arg));
 		try {
 			self->handle();
 		} catch (std::exception const& e) {
-			self->ex = std::current_exception();
 		}
 		// Client was given a task, and he has not sent the result
+		cout << "Client gone, left " << self->tasks.size() << " tasks unsolved" << endl;
 		pthread_mutex_lock(&primes_mutex);
 		pending.insert(self->tasks.begin(), self->tasks.end());
 		pthread_mutex_unlock(&primes_mutex);
-		delete self->prot;
-		self->done = true;
-		printf("Client gone\n");
 		return nullptr;
 	}
 
 	void handle() {
 		while (working) {
 			protocol::message_type type;
-			try {
-				type = prot->read_message_type();
-			} catch (std::exception const& e) {
-				// EOF or died; no more messages
-				break;
-			}
 			protocol::result res;
 			protocol::value task;
+
+			type = prot->read_message_type();
 			switch (type) {
 				case protocol::CLI_RESULT:
 					res = prot->read_result();
@@ -70,10 +60,10 @@ struct client_handler {
 					tasks.erase(res.task);
 					break;
 				case protocol::CLI_PARTICIPATE:
-					pthread_mutex_lock(&primes_mutex);					
+					pthread_mutex_lock(&primes_mutex);
 					if (pending.size() == 0) {
 						task = last++;
-					} else { 
+					} else {
 						task = *pending.begin();
 						pending.erase(pending.begin());
 					}
@@ -102,11 +92,9 @@ struct client_handler {
 				default:
 					throw std::runtime_error("Wrong message type");
 			}
-		}	
+		}
 	}
 };
-
-static std::vector<client_handler*> handlers;
 
 void server(stream_server_socket* server_socket) {
 	pthread_mutex_init(&primes_mutex, nullptr);
@@ -115,16 +103,6 @@ void server(stream_server_socket* server_socket) {
 	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
 	while (working) {
-		// Collect stopped threads
-		auto it = std::remove_if(handlers.begin(), handlers.end(), [](auto p) {return (bool)p->done;});
-		std::for_each(it, handlers.end(), [](auto p) {
-				if (p->ex != nullptr)
-					std::rethrow_exception(p->ex);
-				delete p;
-			}
-		);
-		handlers.resize(it - handlers.begin());
-
 		stream_socket* socket;
 		try {
 			socket = server_socket->accept_one_client();
@@ -134,11 +112,8 @@ void server(stream_server_socket* server_socket) {
 			else
 				break;
 		}
-		printf("Hey, a client!\n");
-		client_handler* handler = new client_handler();
-		handler->prot = new protocol(std::unique_ptr<stream_socket>(socket));
-
-		handlers.push_back(handler);
+		cout << "Hey, a client!" << endl;
+		client_handler* handler = new client_handler(std::make_unique<protocol>(std::unique_ptr<stream_socket>(socket)));
 		pthread_create(&handler->thread, &attr, client_handler::enter, (void*)(handler));
 	}
 
