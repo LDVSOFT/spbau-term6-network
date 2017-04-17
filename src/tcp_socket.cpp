@@ -1,6 +1,7 @@
 #include "tcp_socket.h"
+#include "make_array.h"
 
-#include <stdexcept>
+#include <algorithm>
 #include <string>
 #include <errno.h>
 #include <string.h>
@@ -10,6 +11,8 @@
 using std::runtime_error;
 using std::string;
 using namespace std::literals;
+
+constexpr int LISTEN_QUEUE(16);
 
 static runtime_error error(char const* s, char const* comment) {
 	return runtime_error(string(s) + ": "s + string(comment));
@@ -102,17 +105,24 @@ tcp_server_socket::tcp_server_socket(hostname host, tcp_port port) {
 		close(fd);
 		throw error("Failed to bind socket");
 	}
-	if (listen(fd, 0) < 0) {
+	if (listen(fd, LISTEN_QUEUE) < 0) {
 		close(fd);
 		throw error("Failed to listen on socket");
 	}
 }
 
 stream_socket* tcp_server_socket::accept_one_client() {
-	int client = accept(fd, NULL, NULL);
-	if (client < 0)
-		throw error("Failed to accept a client");
-	return new tcp_socket(client);
+	static constexpr auto NOT_ERROR(make_array(ENETDOWN, EPROTO, ENOPROTOOPT, EHOSTDOWN, ENONET, EHOSTUNREACH, EOPNOTSUPP, ENETUNREACH));
+
+	while (true) {
+		int client = accept(fd, NULL, NULL);
+		if (client < 0) {
+			if (std::find(NOT_ERROR.begin(), NOT_ERROR.end(), errno) != NOT_ERROR.end())
+				throw error("Failed to accept a client");
+		} else {
+			return new tcp_socket(client);
+		}
+	}
 }
 
 tcp_server_socket::~tcp_server_socket() {}

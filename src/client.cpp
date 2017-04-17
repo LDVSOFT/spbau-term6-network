@@ -1,6 +1,7 @@
 #include "client.h"
 #include "protocol.h"
 
+#include <exception>
 #include <string>
 #include <iostream>
 #include <atomic>
@@ -16,6 +17,7 @@ using std::flush;
 using std::exception;
 using std::exception_ptr;
 using std::current_exception;
+using std::rethrow_exception;
 using namespace std::literals;
 
 static atomic_bool working(true);
