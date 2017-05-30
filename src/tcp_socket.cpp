@@ -89,6 +89,7 @@ tcp_client_socket::tcp_client_socket(hostname host, tcp_port port) {
 
 void tcp_client_socket::connect() {
 	if (::connect(fd, (struct sockaddr*)(&addr), sizeof(addr)) < 0)
+		if (errno != EISCONN)
 		throw error("Failed to connect");
 }
 
@@ -102,7 +103,7 @@ tcp_server_socket::tcp_server_socket(hostname host, tcp_port port) {
 		close(fd);
 		throw error("Failed to bind socket");
 	}
-	if (listen(fd, 0) < 0) {
+	if (listen(fd, 16) < 0) {
 		close(fd);
 		throw error("Failed to listen on socket");
 	}

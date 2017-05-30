@@ -85,7 +85,6 @@ static void test_stream_sockets_partial_data_sent()
     pthread_create(&th, NULL, test_stream_sockets_partial_data_sent_thread_func, NULL);
 
     bool thrown = false;
-    server_client.reset(server->accept_one_client());
     try {
         server_client->recv(buf, 4);
     } catch (...) {
@@ -102,8 +101,8 @@ static void test_tcp_stream_sockets()
     server.reset(new tcp_server_socket(TEST_ADDR, TCP_TEST_PORT));
     client.reset(new tcp_client_socket(TEST_ADDR, TCP_TEST_PORT));
 
-    //test_stream_sockets_datapipe();
-	test_stream_sockets_partial_data_sent();
+    test_stream_sockets_datapipe();
+    test_stream_sockets_partial_data_sent();
 #endif
 }
 
