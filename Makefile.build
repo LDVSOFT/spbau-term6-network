@@ -7,7 +7,7 @@ all: $(BIN32) $(BIN64)
 -include $(DEP)
 
 dep/%.d: src/%.cpp $(MAKEFILES)
-	$(CXX) $(CXXFLAGS_DEPS) -MM -MF $@ -MT '$(patsubst obj/%.d,obj/%.o32,$@) $(patsubst obj/%.d,obj/%.o64,$@)' $<
+	$(CXX) $(CXXFLAGS_DEPS) -MM -MF $@ -MT '$(patsubst dep/%.d,obj/%.o32,$@) $(patsubst dep/%.d,obj/%.o64,$@)' $<
 
 obj/%.o32: src/%.cpp $(MAKEFILES)
 	$(CXX) -m32 $(CXXFLAGS) -c $< -o $@

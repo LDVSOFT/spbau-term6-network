@@ -10,7 +10,7 @@ build: | obj bin dep
 	ln -s server64 bin/server 2>/dev/null | true
 
 elevate: build
-	./elevate.sh
+	@./elevate.sh
 
 clean:
 	rm -rf obj/ bin/ dep/
