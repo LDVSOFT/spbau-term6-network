@@ -22,6 +22,14 @@ using std::to_string;
 using std::unique_ptr;
 using namespace std::literals;
 
+#if false
+	#define eprintf(format, args...) printf("!! %d: " format "\n", local_port, args)
+	#define eprintfw(format, args...) printf("!! worker %d: " format "\n", local_port, args)
+#else
+	#define eprintf(...)
+	#define eprintfw(...)
+#endif
+
 struct pthread_mutex_guard {
 private:
 	pthread_mutex_t& mutex;
@@ -136,6 +144,15 @@ au_base_socket::au_base_socket(
 
 au_base_socket::~au_base_socket() {
 	try {
+		pthread_mutex_guard guard(mutex);
+		while (state == ESTABLISHED && send_acked < send_pos)
+			pthread_cond_wait(&update, &mutex);
+		if (state == ESTABLISHED) {
+			state = FIN_SENT;
+			to_worker(WORKER_SEND_FIN);
+			while (state != CLOSED && !recv_fin)
+				pthread_cond_wait(&update, &mutex);
+		}
 		to_worker(WORKER_STOP);
 	} catch (...) {
 	}
@@ -275,19 +292,25 @@ void au_base_socket::recv(uint8_t* data, size_t len) {
 		size_t dlen(len - pos);
 		if (dlen > recv_pos - recv_taken)
 			dlen = recv_pos - recv_taken;
-		if (dlen == 0 && state == ESTABLISHED) {
+		eprintf("read: %zu/%zu dlen=%zu", pos, len, dlen);
+		if (dlen == 0 && state == ESTABLISHED && !recv_fin) {
 			pthread_cond_wait(&update, &mutex);
 			continue;
 		}
-		if (state != ESTABLISHED)
+		if (state == CLOSED)
 			throw error("closed!", "");
+		if (recv_fin)
+			throw error("eof", "");
 		size_t buffer_start(recv_taken % BUFFER_SIZE);
 		if (dlen > BUFFER_SIZE - buffer_start)
 			dlen = BUFFER_SIZE - buffer_start;
-		memcpy(data, send_buffer + buffer_start, dlen);
+		memcpy(data, recv_buffer + buffer_start, dlen);
 		recv_taken += dlen;
+		pos += dlen;
 	}
+	eprintf("read %zu/%zu over", pos, len);
 }
+
 void* au_base_socket::work_wrap(void* arg) {
 	au_base_socket* self(static_cast<au_base_socket*>(arg));
 	try {
@@ -432,6 +455,7 @@ void au_base_socket::work() {
 						if (in_packet.header.flags == AU_ACK) {
 							if (send_acked < in_packet.header.ack) {
 								send_acked = in_packet.header.ack;
+								eprintf("got ack %d", send_acked);
 								pthread_cond_broadcast(&update);
 								to_worker(WORKER_SEND_DATA);
 								if (send_acked == send_pos) {
@@ -440,10 +464,14 @@ void au_base_socket::work() {
 									timer_setup();
 								}
 							}
+						} else if (in_packet.header.flags == AU_FIN && in_packet.header.seq == recv_pos) {
+							recv_fin = true;
+							pthread_cond_broadcast(&update);
 						} else if (in_packet.header.flags == 0 && in_packet.header.seq == recv_pos) {
 							au_stream_pos accepted(in_packet.header.len);
 							if (accepted > BUFFER_SIZE - (recv_pos - recv_taken))
 								accepted = BUFFER_SIZE - (recv_pos - recv_taken);
+							eprintfw("Got data %d..%d", recv_pos, recv_pos + accepted);
 							size_t buffer_start(recv_pos % BUFFER_SIZE), buffer_end((recv_pos + accepted) % BUFFER_SIZE);
 							if (buffer_start < buffer_end) {
 								memcpy(recv_buffer + buffer_start, in_packet.data, accepted);
@@ -455,7 +483,67 @@ void au_base_socket::work() {
 							pthread_cond_broadcast(&update);
 							out_packet.header.len = 0;
 							out_packet.header.flags = AU_ACK;
-							out_packet.header.ack = accepted;
+							out_packet.header.ack = recv_pos;
+							send_packet(out_packet);
+						}
+						break;
+					case FIN_SENT:
+						if (in_packet.header.flags == AU_FINACK) {
+							state = FIN_WAIT;
+							timer_shutdown();
+							pthread_cond_broadcast(&update);
+						} else if (in_packet.header.flags == AU_FIN && in_packet.header.seq == recv_pos) {
+							recv_fin = true;
+							out_packet.header.len = 0;
+							out_packet.header.flags = AU_FINACK;
+							send_packet(out_packet);
+							pthread_cond_broadcast(&update);
+						} else if (in_packet.header.flags == 0 && in_packet.header.seq == recv_pos) {
+							au_stream_pos accepted(in_packet.header.len);
+							if (accepted > BUFFER_SIZE - (recv_pos - recv_taken))
+								accepted = BUFFER_SIZE - (recv_pos - recv_taken);
+							eprintfw("Got data %d..%d", recv_pos, recv_pos + accepted);
+							size_t buffer_start(recv_pos % BUFFER_SIZE), buffer_end((recv_pos + accepted) % BUFFER_SIZE);
+							if (buffer_start < buffer_end) {
+								memcpy(recv_buffer + buffer_start, in_packet.data, accepted);
+							} else {
+								memcpy(recv_buffer + buffer_start, in_packet.data, BUFFER_SIZE - buffer_start);
+								memcpy(recv_buffer, in_packet.data + (BUFFER_SIZE - buffer_start), buffer_end);
+							}
+							recv_pos += accepted;
+							pthread_cond_broadcast(&update);
+							out_packet.header.len = 0;
+							out_packet.header.flags = AU_ACK;
+							out_packet.header.ack = recv_pos;
+							send_packet(out_packet);
+						}
+						break;
+					case FIN_WAIT:
+						if (in_packet.header.flags == AU_FIN && in_packet.header.seq == recv_pos) {
+							recv_fin = true;
+							out_packet.header.len = 0;
+							out_packet.header.flags = AU_FINACK;
+							send_packet(out_packet);
+							state = CLOSED;
+							pthread_cond_broadcast(&update);
+						} else if (in_packet.header.flags == 0 && in_packet.header.seq == recv_pos) {
+							au_stream_pos accepted(in_packet.header.len);
+							if (accepted > BUFFER_SIZE - (recv_pos - recv_taken))
+								accepted = BUFFER_SIZE - (recv_pos - recv_taken);
+							eprintfw("Got data %d..%d", recv_pos, recv_pos + accepted);
+							size_t buffer_start(recv_pos % BUFFER_SIZE), buffer_end((recv_pos + accepted) % BUFFER_SIZE);
+							if (buffer_start < buffer_end) {
+								memcpy(recv_buffer + buffer_start, in_packet.data, accepted);
+							} else {
+								memcpy(recv_buffer + buffer_start, in_packet.data, BUFFER_SIZE - buffer_start);
+								memcpy(recv_buffer, in_packet.data + (BUFFER_SIZE - buffer_start), buffer_end);
+							}
+							recv_pos += accepted;
+							pthread_cond_broadcast(&update);
+							out_packet.header.len = 0;
+							out_packet.header.flags = AU_ACK;
+							out_packet.header.ack = recv_pos;
+							send_packet(out_packet);
 						}
 						break;
 				}
@@ -473,14 +561,16 @@ void au_base_socket::work() {
 						pthread_cond_broadcast(&update);
 						break;
 					case ESTABLISHED:
+					case FIN_SENT:
 						if (timeouts >= 10) {
 							state = CLOSED;
 							pthread_cond_broadcast(&update);
 						} else {
-							to_worker(WORKER_SEND_DATA);
+							to_worker((state == FIN_SENT) ? WORKER_SEND_FIN : WORKER_SEND_DATA);
 						}
 						break;
 					case CLOSED:
+					case FIN_WAIT:
 					case LISTEN:
 						break;
 				}
@@ -493,13 +583,10 @@ void au_base_socket::work() {
 					case WORKER_STOP:
 						working = false;
 						break;
-					case WORKER_CLOSE:
-						/* FIXME */
-						state = CLOSED;
-						pthread_cond_broadcast(&update);
-						break;
 					case WORKER_SEND_DATA:
 						/* scope */ {
+							if (send_acked == send_pos)
+								timer_shutdown();
 							au_stream_pos pos(send_acked);
 							while (pos < send_pos) {
 								au_stream_pos end(pos + mtu - au_packet::HEADERS);
@@ -515,10 +602,18 @@ void au_base_socket::work() {
 									memcpy(out_packet.data, send_buffer + buffer_start, BUFFER_SIZE - buffer_start);
 									memcpy(out_packet.data + BUFFER_SIZE - buffer_start, send_buffer, buffer_end);
 								}
+								eprintfw("SENDING %d..%d", pos, end);
 								send_packet(out_packet);
 								pos = end;
 							}
 						}
+						break;
+					case WORKER_CONNECT:
+						out_packet.header.len = 0;
+						out_packet.header.flags = AU_SYN;
+						out_packet.header.seq = send_pos;
+						timer_setup();
+						send_packet(out_packet);
 						break;
 					case WORKER_SEND_SYNACK:
 						out_packet.header.len = 0;
@@ -528,13 +623,12 @@ void au_base_socket::work() {
 						timer_setup();
 						send_packet(out_packet);
 						break;
-					case WORKER_CONNECT:
+					case WORKER_SEND_FIN:
 						out_packet.header.len = 0;
-						out_packet.header.flags = AU_SYN;
+						out_packet.header.flags = AU_FIN;
 						out_packet.header.seq = send_pos;
 						timer_setup();
 						send_packet(out_packet);
-						break;
 				}
 			} else
 				throw error("Wrong fd");

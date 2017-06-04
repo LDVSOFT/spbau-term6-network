@@ -20,6 +20,7 @@ enum au_flags: uint8_t {
 	AU_FIN = 0b00000100,
 
 	AU_SYNACK = AU_SYN | AU_ACK,
+	AU_FINACK = AU_FIN | AU_ACK,
 };
 
 struct au_packet_header {
@@ -51,7 +52,8 @@ public:
 		SYN_SENT,
 		SYN_RECEIVED,
 		ESTABLISHED,
-		// FIXME ...
+		FIN_SENT,
+		FIN_WAIT,
 	};
 	static in_addr_t get_addr(hostname host);
 	static in_addr_t local_by_remote(in_addr_t remote_addr);
@@ -75,7 +77,7 @@ private:
 		WORKER_SEND_SYNACK = 0,
 		WORKER_CONNECT = 1,
 		WORKER_SEND_DATA = 2,
-		WORKER_CLOSE = 3,
+		WORKER_SEND_FIN = 3,
 	};
 
 	au_stream_port local_port, remote_port;
@@ -86,6 +88,7 @@ private:
 
 	au_stream_pos recv_pos = 0, send_pos = 0, send_acked = 0, recv_taken = 0;
 	int timeouts = 0;
+	bool recv_fin = false;
 	uint8_t recv_buffer[BUFFER_SIZE], send_buffer[BUFFER_SIZE];
 	size_t backlog;
 	std::set<au_base_socket*> pending_clients;
