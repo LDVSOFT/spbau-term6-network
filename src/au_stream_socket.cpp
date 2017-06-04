@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <errno.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <string.h>
@@ -460,7 +461,8 @@ void au_base_socket::work() {
 				}
 			} else if (fd == timer_fd) {
 				uint64_t msg;
-				read(timer_fd, &msg, sizeof(msg));
+				if (read(timer_fd, &msg, sizeof(msg)) != sizeof(msg) && errno != EAGAIN && errno != EWOULDBLOCK)
+					throw error("read timer");
 				pthread_mutex_guard guard(mutex);
 				timeouts += msg;
 				switch (state) {
@@ -545,8 +547,14 @@ void au_base_socket::work() {
 }
 
 void au_base_socket::to_worker(worker_msg msg) {
-	if (write(worker_pipe[1], &msg, sizeof(msg)) != sizeof(msg))
+	struct sigaction sa_old, sa_new;
+	sa_new.sa_flags = 0;
+	sa_new.sa_handler = SIG_IGN;
+	sigemptyset(&sa_new.sa_mask);
+	sigaction(SIGPIPE, &sa_new, &sa_old);
+	if (write(worker_pipe[1], &msg, sizeof(msg)) != sizeof(msg) && errno != EPIPE)
 		throw error("WORKER can't send message");
+	sigaction(SIGPIPE, &sa_old, nullptr);
 }
 
 au_stream_socket::au_stream_socket(au_base_socket* base_socket): base_socket(base_socket) {
