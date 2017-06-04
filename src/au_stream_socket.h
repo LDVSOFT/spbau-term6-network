@@ -57,6 +57,8 @@ public:
 	};
 	static in_addr_t get_addr(hostname host);
 	static in_addr_t local_by_remote(in_addr_t remote_addr);
+	static au_stream_port get_port();
+	static void free_port(au_stream_port port);
 
 private:
 	enum: uint8_t {

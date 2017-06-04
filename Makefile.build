@@ -16,7 +16,7 @@ obj/%.o64: src/%.cpp $(MAKEFILES)
 	$(CXX) -m64 $(CXXFLAGS) -c $< -o $@
 
 bin/%32: obj/main_%.o32 $(OBJ32_NM) $(MAKEFILES)
-	$(CXX) -m32 $(CXXFLAGS) $< $(OBJ32_NM) -o $@
+	$(CXX) -m32 $(CXXFLAGS) $< $(OBJ32_NM) $(LFLAGS) -o $@
 
 bin/%64: obj/main_%.o64 $(OBJ64_NM) $(MAKEFILES)
-	$(CXX) -m64 $(CXXFLAGS) $< $(OBJ64_NM) -o $@
+	$(CXX) -m64 $(CXXFLAGS) $< $(OBJ64_NM) $(LFLAGS) -o $@

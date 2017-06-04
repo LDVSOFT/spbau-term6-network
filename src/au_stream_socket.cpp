@@ -8,10 +8,13 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <semaphore.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/timerfd.h>
 
 using std::make_unique;
@@ -30,6 +33,16 @@ using namespace std::literals;
 	#define eprintfw(...)
 #endif
 
+static char const* SHM_NAME = "/au-stream-ports";
+
+struct au_shmem {
+	enum: size_t {
+		MAX_PORT = (1ull << (8 * sizeof(au_stream_port))) - 1
+	};
+	sem_t sem;
+	bool is_free[MAX_PORT];
+};
+
 struct pthread_mutex_guard {
 private:
 	pthread_mutex_t& mutex;
@@ -41,6 +54,20 @@ public:
 
 	~pthread_mutex_guard() {
 		pthread_mutex_unlock(&mutex);
+	}
+};
+
+struct sem_guard {
+private:
+	sem_t& sem;
+
+public:
+	sem_guard(sem_t& sem): sem(sem) {
+		sem_wait(&sem);
+	}
+
+	~sem_guard() {
+		sem_post(&sem);
 	}
 };
 
@@ -113,6 +140,51 @@ int8_t au_base_socket::checksum(au_packet const& packet) {
 		ptr++;
 	}
 	return sum;
+}
+
+au_stream_port au_base_socket::get_port() {
+	/* create-once */ {
+		int fd(shm_open(SHM_NAME, O_RDWR | O_CREAT | O_EXCL, 0777));
+		if (fd < 0 && errno != EEXIST)
+			throw error("Failed to create shmem");
+		au_shmem& mem(*static_cast<au_shmem*>(mmap(nullptr, sizeof(au_shmem), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)));
+		::close(fd);
+		if (&mem == static_cast<au_shmem*>(MAP_FAILED))
+			throw error("Failed to mmap");
+		if (sem_init(&mem.sem, true, 1) < 0)
+			throw error("sem_init");
+		munmap(&mem, sizeof(au_shmem));
+	}
+	int fd(shm_open(SHM_NAME, O_RDWR, 0));
+	if (fd < 0)
+		throw error("shm_open");
+	au_shmem& mem(*static_cast<au_shmem*>(mmap(nullptr, sizeof(au_shmem), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)));
+	::close(fd);
+	if (&mem == static_cast<au_shmem*>(MAP_FAILED))
+		throw error("mmap");
+	sem_guard guard(mem.sem);
+	au_stream_port result(0);
+	for (au_stream_port port(1); port != au_shmem::MAX_PORT; ++port)
+		if (mem.is_free[port]) {
+			mem.is_free[port] = false;
+			result = port;
+			break;
+		}
+	munmap(&mem, sizeof(au_shmem));
+	return result;
+}
+
+void au_base_socket::free_port(au_stream_port port) {
+	int fd(shm_open(SHM_NAME, O_RDWR, 0));
+	if (fd < 0)
+		throw error("shm_open");
+	au_shmem& mem(*static_cast<au_shmem*>(mmap(nullptr, sizeof(au_shmem), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)));
+	::close(fd);
+	if (&mem == static_cast<au_shmem*>(MAP_FAILED))
+		throw error("mmap");
+	sem_guard guard(mem.sem);
+	mem.is_free[port] = true;
+	munmap(&mem, sizeof(au_shmem));
 }
 
 au_base_socket::au_base_socket(
