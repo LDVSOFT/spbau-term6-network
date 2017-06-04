@@ -1,8 +1,8 @@
 #include "protocol.h"
+#include "endian.h"
 
 #include <type_traits>
 #include <stdexcept>
-#include <endian.h>
 
 using std::enable_if_t;
 using std::remove_reference_t;
@@ -15,41 +15,6 @@ template<typename T>
 constexpr bool is_enum_v = std::is_enum<T>::value;
 using std::unique_ptr;
 using std::runtime_error;
-
-// hton & ntoh templates
-template<typename T>
-static inline enable_if_t<is_integral_v<T>, T> hton(T value) {
-	static_assert(sizeof(uint8_t) <= sizeof(value) && sizeof(value) <= sizeof(uint64_t), "Bad type for hton<T>");
-	switch (sizeof(value)) {
-		case sizeof(uint8_t):
-			return value;
-		case sizeof(uint16_t):
-			return T(htobe16(uint16_t(value)));
-		case sizeof(uint32_t):
-			return T(htobe32(uint32_t(value)));
-		case sizeof(uint64_t):
-			return T(htobe64(uint64_t(value)));
-		default:
-			return 0;
-	}
-}
-
-template<typename T>
-static inline enable_if_t<is_integral_v<T>, T> ntoh(T value) {
-	static_assert(sizeof(uint8_t) <= sizeof(value) && sizeof(value) <= sizeof(uint64_t), "Bad type for hton<T>");
-	switch (sizeof(value)) {
-		case sizeof(uint8_t):
-			return value;
-		case sizeof(uint16_t):
-			return T(be16toh(uint16_t(value)));
-		case sizeof(uint32_t):
-			return T(be32toh(uint32_t(value)));
-		case sizeof(uint64_t):
-			return T(be64toh(uint64_t(value)));
-		default:
-			return 0;
-	}
-}
 
 // IO-functions for numerics and enums
 template<typename T>

@@ -14,27 +14,12 @@ using au_buf_size = uint32_t;
 using au_stream_pos = uint32_t;
 
 enum au_flags: uint8_t {
+	AU_NONE = 0,
 	AU_SYN = 0b00000001,
 	AU_ACK = 0b00000010,
 	AU_FIN = 0b00000100,
 
 	AU_SYNACK = AU_SYN | AU_ACK,
-};
-
-template<au_buf_size size>
-struct au_buffer {
-private:
-	pthread_mutex_t mutex;
-	pthread_cond_t update;
-	au_buf_size start = 0, end = 0;
-	uint8_t data[size];
-
-public:
-	au_buffer();
-	~au_buffer();
-
-	size_t read(uint8_t* buffer, size_t len);
-	size_t write(uint8_t const* buffer, size_t len);
 };
 
 struct au_packet_header {
@@ -52,7 +37,8 @@ struct au_packet_header {
 struct au_packet {
 	au_packet_header header;
 	enum: size_t {
-		MAX_DATA = IP_MAXPACKET - sizeof(au_packet_header)
+		HEADERS = sizeof(au_packet_header) + sizeof(ip),
+		MAX_DATA = IP_MAXPACKET - HEADERS
 	};
 	uint8_t data[MAX_DATA];
 } __attribute__((packed));
@@ -78,15 +64,17 @@ private:
 		BUFFER_SIZE = 1 * 1024 * 1024
 	};
 
+	static int8_t checksum(au_packet const& packet);
+
 	pthread_t worker;
 	pthread_mutex_t mutex;
 	pthread_cond_t update;
-	int worker_pipe[2], socket_fd;
-	enum: int {
+	int worker_pipe[2], socket_fd, timer_fd, epoll_fd;
+	enum worker_msg: int {
 		WORKER_STOP = 255,
 		WORKER_SEND_SYNACK = 0,
 		WORKER_CONNECT = 1,
-		WORKER_NEWDATA = 2,
+		WORKER_SEND_DATA = 2,
 		WORKER_CLOSE = 3,
 	};
 
@@ -94,31 +82,41 @@ private:
 	in_addr_t local_addr, remote_addr;
 	au_socket_state state = CLOSED;
 
-	au_stream_pos recv_pos = 0, send_pos = 0, send_acked = 0;
-	au_buffer<BUFFER_SIZE> recv_buffer, send_buffer;
+	au_stream_pos mtu = 1000;
+
+	au_stream_pos recv_pos = 0, send_pos = 0, send_acked = 0, recv_taken = 0;
+	int timeouts = 0;
+	uint8_t recv_buffer[BUFFER_SIZE], send_buffer[BUFFER_SIZE];
 	size_t backlog;
 	std::set<au_base_socket*> pending_clients;
 
 	static void* work_wrap(void* arg);
 	void work();
-	void to_worker(int msg);
+	void to_worker(worker_msg msg);
 
-	static uint64_t checksum(au_packet const& packet);
+	void timer_setup();
+	void timer_shutdown();
+	void send_data();
 
-	int send_packet(au_packet& pack, in_addr_t const& to);
+	au_base_socket(
+			in_addr_t local_addr, au_stream_port local_port,
+			in_addr_t remote_addr, au_stream_port remote_port,
+			au_socket_state state
+		);
 	int send_packet(au_packet& pack);
 	int recv_packet(au_packet& pack, in_addr_t& from);
-	int recv_packet(au_packet& pack);
+	int setup_timer(int timer);
 
 public:
 	au_base_socket(
-			in_addr_t local_addr, au_stream_port local_port, 
-			in_addr_t remote_addr, au_stream_port remote_port, 
-			au_socket_state state = CLOSED
+			in_addr_t local_addr, au_stream_port local_port,
+			in_addr_t remote_addr, au_stream_port remote_port
 		);
 	virtual ~au_base_socket();
 
-	void listen(size_t backlog);
+	void send(uint8_t const* data, size_t len);
+	void recv(uint8_t* data, size_t len);
+	void listen(size_t backlog = 16);
 	au_base_socket* accept();
 	void connect();
 	void close();
@@ -129,24 +127,22 @@ protected:
 	std::unique_ptr<au_base_socket> base_socket;
 public:
 	au_stream_socket(au_base_socket* base_socket);
-	virtual void send(void const* buf, size_t size) override = 0;
-	virtual void recv(void* buf, size_t size) override = 0;
+	virtual void send(void const* buf, size_t size) override;
+	virtual void recv(void* buf, size_t size) override;
 	virtual ~au_stream_socket() override = default;
 };
 
-struct au_client_stream_socket: virtual public stream_client_socket, public au_stream_socket {
-	au_client_stream_socket(hostname host, au_stream_port port);
+struct au_stream_client_socket: virtual public stream_client_socket, public au_stream_socket {
+	au_stream_client_socket(hostname host, au_stream_port local_port, au_stream_port remote_port);
 	virtual void connect() override;
-	virtual ~au_client_stream_socket() override = default;
+	virtual ~au_stream_client_socket() override = default;
 };
 
-struct au_server_stream_socket: virtual public stream_server_socket {
+struct au_stream_server_socket: virtual public stream_server_socket {
 private:
-	hostname remote_host;
-	au_stream_port remote_port;
 	std::unique_ptr<au_base_socket> base_socket;
 public:
-	au_server_stream_socket(hostname host, au_stream_port port);
+	au_stream_server_socket(hostname host, au_stream_port port);
 	virtual stream_socket* accept_one_client() override;
-	virtual ~au_server_stream_socket() override = default;
+	virtual ~au_stream_server_socket() override = default;
 };

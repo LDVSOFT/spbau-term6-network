@@ -11,7 +11,7 @@
 #include "au_stream_socket.h"
 
 #define TEST_TCP_STREAM_SOCKET
-//#define TEST_AU_STREAM_SOCKET
+#define TEST_AU_STREAM_SOCKET
 
 const char *TEST_ADDR = "localhost";
 const tcp_port TCP_TEST_PORT = 40002;
